@@ -25,6 +25,7 @@ struct Metal: Codable, Identifiable, Hashable {
         case "NI": return "green"       // 니켈
         case "PB": return "purple"      // 납
         case "SN": return "brown"       // 주석
+        case "AG": return "mint"        // 은
         default: return "primary"
         }
     }

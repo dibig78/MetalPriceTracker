@@ -112,6 +112,7 @@ struct LatestPrice: Codable, Identifiable {
         case "NI": return "green"
         case "PB": return "purple"
         case "SN": return "brown"
+        case "AG": return "mint"
         default: return "primary"
         }
     }

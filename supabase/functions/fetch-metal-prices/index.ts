@@ -15,7 +15,7 @@ const METALS_API_KEY = Deno.env.get("METALS_API_KEY") || "5db412ead539e53d6abd8c
 // MetalpriceAPI 기본 URL
 const METALS_API_BASE = "https://api.metalpriceapi.com/v1";
 
-// LME 비철금속 심볼 매핑 (MetalpriceAPI 형식)
+// 금속 심볼 매핑 (MetalpriceAPI 형식)
 const METAL_SYMBOLS: Record<string, string> = {
   CU: "LME-XCU",  // 구리
   AL: "LME-ALU",  // 알루미늄
@@ -23,6 +23,7 @@ const METAL_SYMBOLS: Record<string, string> = {
   NI: "LME-NI",   // 니켈
   PB: "LME-PB",   // 납
   SN: "LME-SN",   // 주석
+  AG: "XAG",       // 은 (Silver)
 };
 
 interface MetalpriceApiResponse {
