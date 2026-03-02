@@ -9,7 +9,7 @@ final class SupabaseService {
 
     private let client = SupabaseClient(
         supabaseURL: URL(string: "https://qqlohybmnlpuwvuwsxkp.supabase.co")!,
-        supabaseKey: "sb_publishable_IqriRb5tGd2a0Ae_DoiKeg_kEZ--f0D"
+        supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFxbG9oeWJtbmxwdXd2dXdzeGtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0NDQ4OTIsImV4cCI6MjA4ODAyMDg5Mn0.50C1vc2LQXlPd0BVySBc44UFYldA0Wx5nFcbv0YSU5c"
     )
 
     private init() {}

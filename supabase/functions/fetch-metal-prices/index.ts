@@ -1,7 +1,8 @@
 // ============================================
 // MetalPriceTracker - 일별 시세 수집 Edge Function
 // Supabase Edge Function (Deno/TypeScript)
-// 매일 자동으로 MetalpriceAPI에서 LME 비철금속 시세를 가져와 DB에 저장
+// 매일 자동으로 Metals.Dev API에서 금속 시세를 가져와 DB에 저장
+// API: https://metals.dev (무료 100회/월)
 // ============================================
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
@@ -10,28 +11,36 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // 환경 변수
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const METALS_API_KEY = Deno.env.get("METALS_API_KEY") || "5db412ead539e53d6abd8cdf25ec3ccf";
+const METALS_DEV_API_KEY = Deno.env.get("METALS_DEV_API_KEY") || "";
 
-// MetalpriceAPI 기본 URL
-const METALS_API_BASE = "https://api.metalpriceapi.com/v1";
+// Metals.Dev API 기본 URL
+const METALS_DEV_BASE = "https://api.metals.dev/v1";
 
-// 금속 심볼 매핑 (MetalpriceAPI 형식)
-const METAL_SYMBOLS: Record<string, string> = {
-  CU: "LME-XCU",  // 구리
-  AL: "LME-ALU",  // 알루미늄
-  ZN: "LME-ZNC",  // 아연
-  NI: "LME-NI",   // 니켈
-  PB: "LME-PB",   // 납
-  SN: "LME-SN",   // 주석
-  AG: "XAG",       // 은 (Silver)
+// 1 메트릭톤 = 32,150.7 트로이온스
+const TOZ_PER_MT = 32150.7;
+
+// 금속 심볼 매핑 (DB symbol → Metals.Dev API key)
+// type: "industrial" = LME 산업금속 (가격: USD/MT), "precious" = 귀금속 (가격: USD/toz)
+const METAL_MAP: Record<string, { key: string; type: "industrial" | "precious" }> = {
+  CU: { key: "lme_copper",    type: "industrial" },  // 구리
+  AL: { key: "lme_aluminum",  type: "industrial" },  // 알루미늄
+  ZN: { key: "lme_zinc",      type: "industrial" },  // 아연
+  NI: { key: "lme_nickel",    type: "industrial" },  // 니켈
+  PB: { key: "lme_lead",      type: "industrial" },  // 납
+  SN: { key: "lme_tin",       type: "industrial" },  // 주석 (미지원 시 자동 skip)
+  AG: { key: "silver",        type: "precious" },     // 은
 };
 
-interface MetalpriceApiResponse {
-  success: boolean;
-  timestamp: number;
-  date: string;
-  base: string;
-  rates: Record<string, number>;
+// Metals.Dev API 응답 타입
+interface MetalsDevResponse {
+  status: string;
+  currency: string;
+  unit: string;
+  metals: Record<string, number>;
+  timestamps: {
+    metal: string;
+    currency: string;
+  };
 }
 
 interface MetalPriceRow {
@@ -45,29 +54,21 @@ interface MetalPriceRow {
   change_percent: number | null;
 }
 
-// MetalpriceAPI에서 시세 조회
-async function fetchMetalPrices(date?: string): Promise<MetalpriceApiResponse> {
-  const currencies = Object.values(METAL_SYMBOLS).join(",");
+// Metals.Dev API에서 최신 시세 조회
+async function fetchMetalPrices(): Promise<MetalsDevResponse> {
+  const url = `${METALS_DEV_BASE}/latest?api_key=${METALS_DEV_API_KEY}&currency=USD&unit=toz`;
 
-  let url: string;
-  if (date) {
-    // 특정 날짜 조회
-    url = `${METALS_API_BASE}/${date}?api_key=${METALS_API_KEY}&base=USD&currencies=${currencies}`;
-  } else {
-    // 최신 시세 조회
-    url = `${METALS_API_BASE}/latest?api_key=${METALS_API_KEY}&base=USD&currencies=${currencies}`;
-  }
-
-  console.log(`Fetching prices from: ${url.replace(METALS_API_KEY, "***")}`);
+  console.log(`Fetching prices from: ${url.replace(METALS_DEV_API_KEY, "***")}`);
 
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`MetalpriceAPI error: ${response.status} ${response.statusText}`);
+    const errorText = await response.text();
+    throw new Error(`Metals.Dev API error: ${response.status} ${response.statusText} - ${errorText}`);
   }
 
-  const data: MetalpriceApiResponse = await response.json();
-  if (!data.success) {
-    throw new Error(`MetalpriceAPI returned error: ${JSON.stringify(data)}`);
+  const data: MetalsDevResponse = await response.json();
+  if (data.status !== "success") {
+    throw new Error(`Metals.Dev API returned error: ${JSON.stringify(data)}`);
   }
 
   return data;
@@ -77,7 +78,7 @@ async function fetchMetalPrices(date?: string): Promise<MetalpriceApiResponse> {
 async function getMetals(supabase: ReturnType<typeof createClient>) {
   const { data, error } = await supabase
     .from("metals")
-    .select("id, symbol")
+    .select("id, symbol, unit")
     .eq("is_active", true);
 
   if (error) throw new Error(`Failed to fetch metals: ${error.message}`);
@@ -171,7 +172,12 @@ serve(async (req) => {
       });
     }
 
-    console.log("Starting daily metal price fetch...");
+    console.log("Starting daily metal price fetch (Metals.Dev)...");
+
+    // API 키 확인
+    if (!METALS_DEV_API_KEY) {
+      throw new Error("METALS_DEV_API_KEY environment variable is not set");
+    }
 
     // Supabase 클라이언트 (service role로 RLS 우회)
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -180,42 +186,39 @@ serve(async (req) => {
     const metals = await getMetals(supabase);
     console.log(`Found ${metals.length} active metals`);
 
-    // 2. MetalpriceAPI에서 최신 시세 조회
+    // 2. Metals.Dev API에서 최신 시세 조회
     const apiData = await fetchMetalPrices();
-    console.log(`Fetched prices for date: ${apiData.date}`);
-    console.log(`Rates received:`, JSON.stringify(apiData.rates));
+    console.log(`API response metals:`, JSON.stringify(apiData.metals));
+    console.log(`API unit: ${apiData.unit}, currency: ${apiData.currency}`);
 
     // 3. 데이터 변환 및 저장
     const priceRows: MetalPriceRow[] = [];
-    const today = apiData.date || new Date().toISOString().split("T")[0];
+    const today = new Date().toISOString().split("T")[0];
 
     for (const metal of metals) {
-      const apiSymbol = METAL_SYMBOLS[metal.symbol];
-      if (!apiSymbol) {
-        console.warn(`No symbol mapping for ${metal.symbol}`);
+      const mapping = METAL_MAP[metal.symbol];
+      if (!mapping) {
+        console.warn(`No mapping for ${metal.symbol}`);
         continue;
       }
 
-      // MetalpriceAPI 응답에서 해당 금속 가격 찾기
-      // 응답 형식: rates 객체에 "USDLME-XCU" 또는 "LME-XCU" 키로 들어올 수 있음
-      let rate = apiData.rates[apiSymbol] || apiData.rates[`USD${apiSymbol}`];
+      // API 응답에서 가격 가져오기 (단위: USD/toz)
+      const pricePerToz = apiData.metals[mapping.key];
 
-      if (!rate) {
-        console.warn(`No price data for ${metal.symbol} (tried ${apiSymbol} and USD${apiSymbol})`);
-        console.warn(`Available keys: ${Object.keys(apiData.rates).join(", ")}`);
+      if (pricePerToz === undefined || pricePerToz === null) {
+        console.warn(`No price data for ${metal.symbol} (key: ${mapping.key})`);
+        console.warn(`Available keys: ${Object.keys(apiData.metals).join(", ")}`);
         continue;
       }
 
-      // MetalpriceAPI: base=USD일 때 rates는 "1 USD = X 단위 금속"
-      // 실제 가격(USD/MT)을 얻으려면 1/rate 계산
-      // 단, rate가 이미 USD 가격으로 올 수도 있으므로 값 크기로 판단
+      // 가격 변환
       let closePrice: number;
-      if (rate < 1) {
-        // 1/rate = USD 가격 (예: rate=0.0001 → 가격=$10,000)
-        closePrice = Math.round((1 / rate) * 100) / 100;
+      if (mapping.type === "industrial") {
+        // 산업금속: toz → MT 변환 (1MT = 32,150.7 toz)
+        closePrice = Math.round(pricePerToz * TOZ_PER_MT * 100) / 100;
       } else {
-        // 이미 USD 가격으로 제공됨
-        closePrice = Math.round(rate * 100) / 100;
+        // 귀금속: 이미 USD/toz 단위 그대로 사용
+        closePrice = Math.round(pricePerToz * 100) / 100;
       }
 
       // 전일 대비 변동 계산
@@ -236,7 +239,8 @@ serve(async (req) => {
         change_percent: changePercent ? Math.round(changePercent * 10000) / 10000 : null,
       });
 
-      console.log(`${metal.symbol}: rate=${rate}, price=$${closePrice}`);
+      const unitLabel = mapping.type === "industrial" ? "USD/MT" : "USD/toz";
+      console.log(`${metal.symbol}: ${pricePerToz} USD/toz → $${closePrice} ${unitLabel}`);
     }
 
     if (priceRows.length === 0) {

@@ -106,13 +106,13 @@ struct LatestPrice: Codable, Identifiable {
 
     var displayColor: String {
         switch symbol {
-        case "CU": return "orange"
-        case "AL": return "gray"
-        case "ZN": return "blue"
-        case "NI": return "green"
-        case "PB": return "purple"
-        case "SN": return "brown"
-        case "AG": return "mint"
+        case "CU": return "orange"      // 구리
+        case "AL": return "gray"        // 알루미늄
+        case "ZN": return "blue"        // 아연
+        case "NI": return "green"       // 니켈
+        case "PB": return "purple"      // 납
+        case "SN": return "brown"       // 주석
+        case "AG": return "mint"        // 은
         default: return "primary"
         }
     }
