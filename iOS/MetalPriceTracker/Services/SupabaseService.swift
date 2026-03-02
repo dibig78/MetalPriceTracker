@@ -7,10 +7,9 @@ final class SupabaseService {
 
     static let shared = SupabaseService()
 
-    // TODO: 실제 Supabase 프로젝트 URL과 Anon Key로 교체하세요
     private let client = SupabaseClient(
-        supabaseURL: URL(string: "https://YOUR_PROJECT_REF.supabase.co")!,
-        supabaseKey: "YOUR_SUPABASE_ANON_KEY"
+        supabaseURL: URL(string: "https://qqlohybmnlpuwvuwsxkp.supabase.co")!,
+        supabaseKey: "sb_publishable_IqriRb5tGd2a0Ae_DoiKeg_kEZ--f0D"
     )
 
     private init() {}

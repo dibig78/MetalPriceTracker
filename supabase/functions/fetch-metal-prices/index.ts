@@ -1,7 +1,7 @@
 // ============================================
 // MetalPriceTracker - 일별 시세 수집 Edge Function
 // Supabase Edge Function (Deno/TypeScript)
-// 매일 자동으로 Metals API에서 LME 비철금속 시세를 가져와 DB에 저장
+// 매일 자동으로 MetalpriceAPI에서 LME 비철금속 시세를 가져와 DB에 저장
 // ============================================
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
@@ -10,22 +10,22 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // 환경 변수
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const METALS_API_KEY = Deno.env.get("METALS_API_KEY")!;
+const METALS_API_KEY = Deno.env.get("METALS_API_KEY") || "5db412ead539e53d6abd8cdf25ec3ccf";
 
-// Metals API 기본 URL (metals-api.com 사용)
-const METALS_API_BASE = "https://metals-api.com/api";
+// MetalpriceAPI 기본 URL
+const METALS_API_BASE = "https://api.metalpriceapi.com/v1";
 
-// LME 비철금속 심볼 매핑 (Metals API 형식)
+// LME 비철금속 심볼 매핑 (MetalpriceAPI 형식)
 const METAL_SYMBOLS: Record<string, string> = {
-  CU: "LME-CU",  // 구리
-  AL: "LME-AL",  // 알루미늄
-  ZN: "LME-ZN",  // 아연
-  NI: "LME-NI",  // 니켈
-  PB: "LME-PB",  // 납
-  SN: "LME-SN",  // 주석
+  CU: "LME-XCU",  // 구리
+  AL: "LME-ALU",  // 알루미늄
+  ZN: "LME-ZNC",  // 아연
+  NI: "LME-NI",   // 니켈
+  PB: "LME-PB",   // 납
+  SN: "LME-SN",   // 주석
 };
 
-interface MetalsApiResponse {
+interface MetalpriceApiResponse {
   success: boolean;
   timestamp: number;
   date: string;
@@ -44,26 +44,29 @@ interface MetalPriceRow {
   change_percent: number | null;
 }
 
-// Metals API에서 시세 조회
-async function fetchMetalPrices(date?: string): Promise<MetalsApiResponse> {
-  const symbols = Object.values(METAL_SYMBOLS).join(",");
-  const endpoint = date ? "timeseries" : "latest";
+// MetalpriceAPI에서 시세 조회
+async function fetchMetalPrices(date?: string): Promise<MetalpriceApiResponse> {
+  const currencies = Object.values(METAL_SYMBOLS).join(",");
 
   let url: string;
   if (date) {
-    url = `${METALS_API_BASE}/${date}?access_key=${METALS_API_KEY}&base=USD&symbols=${symbols}`;
+    // 특정 날짜 조회
+    url = `${METALS_API_BASE}/${date}?api_key=${METALS_API_KEY}&base=USD&currencies=${currencies}`;
   } else {
-    url = `${METALS_API_BASE}/latest?access_key=${METALS_API_KEY}&base=USD&symbols=${symbols}`;
+    // 최신 시세 조회
+    url = `${METALS_API_BASE}/latest?api_key=${METALS_API_KEY}&base=USD&currencies=${currencies}`;
   }
+
+  console.log(`Fetching prices from: ${url.replace(METALS_API_KEY, "***")}`);
 
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Metals API error: ${response.status} ${response.statusText}`);
+    throw new Error(`MetalpriceAPI error: ${response.status} ${response.statusText}`);
   }
 
-  const data: MetalsApiResponse = await response.json();
+  const data: MetalpriceApiResponse = await response.json();
   if (!data.success) {
-    throw new Error(`Metals API returned error: ${JSON.stringify(data)}`);
+    throw new Error(`MetalpriceAPI returned error: ${JSON.stringify(data)}`);
   }
 
   return data;
@@ -138,7 +141,6 @@ async function checkAlerts(
 
     if (shouldTrigger) {
       triggeredAlerts.push(alert.id);
-      // TODO: 여기서 APNs 푸시 알림 발송 로직 추가 가능
       console.log(
         `Alert triggered: metal_id=${alert.metal_id}, ` +
         `target=${alert.target_price}, current=${currentPrice}`
@@ -177,27 +179,46 @@ serve(async (req) => {
     const metals = await getMetals(supabase);
     console.log(`Found ${metals.length} active metals`);
 
-    // 2. Metals API에서 최신 시세 조회
+    // 2. MetalpriceAPI에서 최신 시세 조회
     const apiData = await fetchMetalPrices();
     console.log(`Fetched prices for date: ${apiData.date}`);
+    console.log(`Rates received:`, JSON.stringify(apiData.rates));
 
     // 3. 데이터 변환 및 저장
     const priceRows: MetalPriceRow[] = [];
+    const today = apiData.date || new Date().toISOString().split("T")[0];
 
     for (const metal of metals) {
       const apiSymbol = METAL_SYMBOLS[metal.symbol];
-      if (!apiSymbol || !apiData.rates[apiSymbol]) {
-        console.warn(`No price data for ${metal.symbol}`);
+      if (!apiSymbol) {
+        console.warn(`No symbol mapping for ${metal.symbol}`);
         continue;
       }
 
-      // Metals API는 1 USD당 금속량을 반환하므로 역수 계산
-      // (API에 따라 다를 수 있음, 확인 필요)
-      const price = apiData.rates[apiSymbol];
-      const closePrice = price > 0 ? Math.round((1 / price) * 100) / 100 : price;
+      // MetalpriceAPI 응답에서 해당 금속 가격 찾기
+      // 응답 형식: rates 객체에 "USDLME-XCU" 또는 "LME-XCU" 키로 들어올 수 있음
+      let rate = apiData.rates[apiSymbol] || apiData.rates[`USD${apiSymbol}`];
+
+      if (!rate) {
+        console.warn(`No price data for ${metal.symbol} (tried ${apiSymbol} and USD${apiSymbol})`);
+        console.warn(`Available keys: ${Object.keys(apiData.rates).join(", ")}`);
+        continue;
+      }
+
+      // MetalpriceAPI: base=USD일 때 rates는 "1 USD = X 단위 금속"
+      // 실제 가격(USD/MT)을 얻으려면 1/rate 계산
+      // 단, rate가 이미 USD 가격으로 올 수도 있으므로 값 크기로 판단
+      let closePrice: number;
+      if (rate < 1) {
+        // 1/rate = USD 가격 (예: rate=0.0001 → 가격=$10,000)
+        closePrice = Math.round((1 / rate) * 100) / 100;
+      } else {
+        // 이미 USD 가격으로 제공됨
+        closePrice = Math.round(rate * 100) / 100;
+      }
 
       // 전일 대비 변동 계산
-      const prevPrice = await getPreviousPrice(supabase, metal.id, apiData.date);
+      const prevPrice = await getPreviousPrice(supabase, metal.id, today);
       const changeAmount = prevPrice ? closePrice - prevPrice : null;
       const changePercent = prevPrice && prevPrice > 0
         ? ((closePrice - prevPrice) / prevPrice) * 100
@@ -205,14 +226,20 @@ serve(async (req) => {
 
       priceRows.push({
         metal_id: metal.id,
-        price_date: apiData.date,
+        price_date: today,
         close_price: closePrice,
-        open_price: closePrice, // 무료 API에서는 종가만 제공되는 경우가 많음
+        open_price: closePrice,
         high_price: null,
         low_price: null,
         change_amount: changeAmount ? Math.round(changeAmount * 100) / 100 : null,
         change_percent: changePercent ? Math.round(changePercent * 10000) / 10000 : null,
       });
+
+      console.log(`${metal.symbol}: rate=${rate}, price=$${closePrice}`);
+    }
+
+    if (priceRows.length === 0) {
+      throw new Error("No price data could be parsed from API response");
     }
 
     // 4. DB에 저장 (UPSERT)
@@ -225,7 +252,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        date: apiData.date,
+        date: today,
         count: priceRows.length,
         prices: priceRows.map((p) => ({
           metal_id: p.metal_id,
